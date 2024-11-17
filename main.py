@@ -18,8 +18,7 @@ logging.info("Starting the script and loading configuration...")
 API_ID = int(os.getenv("API_ID", 0))
 API_HASH = str(os.getenv("API_HASH", ""))
 source_ids_str = os.getenv("SOURCE_IDS", "")
-
-source_ids = list(map(int, source_ids_str.strip("[]").split(",")))
+source_ids = list(map(int, source_ids_str.split(","))) if source_ids_str else []
 
 if not API_ID or not API_HASH:
     logging.critical("API_ID or API_HASH is missing. Please check your .env file.")
@@ -112,6 +111,7 @@ async def handler(event):
     message = event.message
     message_text = message.message.lower().strip() if message.message else ""
     source_id = event.chat_id
+
     logging.debug(f"New message detected in source ID {source_id}: {message_text}")
 
     if source_id not in source_ids:
@@ -120,8 +120,19 @@ async def handler(event):
         )
         return
 
-    for groups, keywords in group_filters.items():
+    # Проверяем стоп-слова только для текущей группы-источника
+    current_group_stopwords = group_stopwords.get(source_id, [])
+    if current_group_stopwords and any(
+        stopword.lower() in message_text for stopword in current_group_stopwords
+    ):
+        logging.warning(
+            f"Message contains a stop-word for group {source_id}. Skipping message."
+        )
+        return
 
+    # Проходим по фильтрам групп
+    for groups, keywords in group_filters.items():
+        # Проверяем, входит ли текущая группа в конфигурацию
         if isinstance(groups, (list, tuple)):
             if source_id not in groups:
                 continue
@@ -129,21 +140,7 @@ async def handler(event):
             if source_id != groups:
                 continue
 
-        stopwords = []
-        if isinstance(groups, (list, tuple)):
-            for group in groups:
-                stopwords.extend(group_stopwords.get(group, []))
-        else:
-            stopwords.extend(group_stopwords.get(groups, []))
-
-        logging.debug(f"Stopwords for groups {groups}: {stopwords}")
-
-        if any(stopword.lower() in message_text for stopword in stopwords):
-            logging.warning(
-                f"Message contains a stop-word for groups {groups}. Skipping message."
-            )
-            return
-
+        # Если сообщение соответствует ключевым словам, добавляем его в очередь
         if any(keyword.lower() in message_text for keyword in keywords):
             target_groups = get_target_group_for_source(groups)
             if target_groups:
@@ -159,6 +156,39 @@ async def handler(event):
             logging.debug(
                 f"Message does not match filter for groups {groups}. Skipping."
             )
+
+
+# Function to generate a file with group IDs
+async def get_group_ids():
+    logging.info("Fetching group IDs...")
+    dialogs = await client.get_dialogs()
+    with open("group_ids.txt", "w", encoding="utf-8") as file:
+        for dialog in dialogs:
+            if dialog.is_group or dialog.is_channel:
+                file.write(f"Name: {dialog.name}, ID: {dialog.id}\n")
+    logging.info("Group IDs have been saved to 'group_ids.txt'.")
+
+
+# Main function
+async def main():
+    try:
+        await client.start()
+        logging.info("Client successfully started.")
+    except Exception as e:
+        logging.critical(f"Failed to start Telegram client: {e}")
+        exit(1)
+
+    await get_group_ids()
+    logging.info("Starting message processing task.")
+    asyncio.create_task(process_message())
+
+    await client.run_until_disconnected()
+    logging.info("Client disconnected.")
+
+
+if __name__ == "__main__":
+    logging.info("Running the main function...")
+    asyncio.run(main())
 
 
 # Function to generate a file with group IDs
